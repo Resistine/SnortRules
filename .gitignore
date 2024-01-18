@@ -1,6 +1,7 @@
 # Copyright (c) 2024 Resistine
 snortparser/
-rules/
+snort3-community-rules/
+rules_parsed.csv
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
