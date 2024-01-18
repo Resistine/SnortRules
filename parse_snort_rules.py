@@ -22,7 +22,7 @@ if (not os.path.exists(RULES)):
         tar.close()
 
     except Exception as e:
-        print("Excepcion: "+ str(e))
+        print("Exception: "+ str(e))
 
 
 
@@ -61,7 +61,7 @@ with open(CSVFILE, 'w') as csv_rules:
             
             # NOTE: If the snortparser is unable to parse the rule, it will return a ValueError with the invalid rule item.
             except Exception as e:
-                print("Excepcion: "+ str(e))
+                print("Exception: "+ str(e))
                 print(rule)
 
 
