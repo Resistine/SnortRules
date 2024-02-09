@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # Copyright (c) 2024 Resistine
 
+import sys
+import traceback
 import os.path
 import urllib.request
 import tarfile
 import pandas as pd
+import ast
 
 from snortparser.snortparser import Parser, Dicts
 import mitreattack.attackToExcel.attackToExcel as attackToExcel
@@ -17,7 +20,7 @@ OUTBOUND = 'out'
 # Output file
 CSVFILE = "rules_parsed.csv"
 COLUMNS = ['sid', 'proto', 'source', 'src_port', 'arrow', 'destination', 'dst_port', 'classtype', 
-           'direction',	'TActic', 'Technique', 'TA_inb', 'T_inb',  'TA_lat', 'T_lat', 'TA_out', 'T_out',
+           'direction',	'TActic', 'Technique', 'Tname', 'TA_inb', 'T_inb',  'TA_lat', 'T_lat', 'TA_out', 'T_out',
            'msg', 'reference']
 
 # Snort rules file and URL
@@ -44,8 +47,8 @@ if (not os.path.exists(ATTACK_DIR)):
         exit(1)
 
 # read the MITRE ATT&CK TActics and Techniques into DataFrames
-TAs = pd.read_excel(ATTACK_TAs)
-Tes = pd.read_excel(ATTACK_Tes)
+TAs = pd.read_excel(ATTACK_TAs, dtype=str)
+Tes = pd.read_excel(ATTACK_Tes, dtype=str)
 
 
 # read the Resistine Snort to MITRE ATT&CK TActics mappings or exit if the file was deleted
@@ -54,23 +57,29 @@ if (not os.path.exists(MAPPINGS)):
     print("Please, get the mappings file from Git or the shared Drive and try again.")
     exit(1)
 
-df_mappings = pd.read_csv(MAPPINGS)
-
+df_mappings = pd.read_csv(MAPPINGS, dtype=str)
+# print(df_mappings) # DEBUG: print the NaNs in the DataFrame
 
 # Helper function to get the TActic for the classtype and direction from the mappings file.
 def get_TActic(classtype, column):
     '''Get the TActic for the classtype and direction from the mappings file.'''
     
-    d = None
+    # get the TActic for the classtype a the proper direction from the mappings file
     try:
-        d = str(df_mappings.loc[df_mappings['classtype'] == classtype, column].iloc[0])
+        d = df_mappings.loc[df_mappings['classtype'] == classtype, column].iloc[0]
+        # fix the NaN and \xa0 BSs in the DataFrame ... 
+        if (pd.isna(d)): d = None
     except IndexError:
         print("No record for the classtype: "+ classtype)
         return None  # or any default value
     
-    if (d and len(d) > 3): return d
+    # if d is already defined, then return it or get the default TActic from the mappings
+    if (d): return d
     else:
-        return df_mappings.loc[df_mappings['classtype'] == classtype, "TActic"].iloc[0]
+        d = df_mappings.loc[df_mappings['classtype'] == classtype, "TActic"].iloc[0]
+        if (pd.isna(d)): d = None
+    
+    return d
 
 
 
@@ -92,14 +101,16 @@ if (not os.path.exists(RULES)):
 # Helper function to get the connection/attack direction (inbound/outbound) from the parsed rule and return it.
 def get_direction(source, arrow, destination):
     '''Get the connection/attack direction from the parsed rule and return it.
-       This is a best effort function as the direction depends on the newtwork topology and the actual flow.
-       @see: https://docs.snort.org/rules/headers/directions and https://docs.snort.org/rules/headers/ips (any, $EXTERNAL_NET, $HOME_NET, IP/CIDR, [groups], '!...', etc.)
-       @see: https://docs.suricata.io/en/latest/rules/intro.html#direction and https://docs.suricata.io/en/latest/rules/intro.html#source-and-destination
+       This is a best effort function as the direction depends on the newtwork topology and the actual flow,
+       ie> any, $EXTERNAL_NET, $HOME_NET, ... IP/CIDR, [groups], '!...', etc.
+       @see: https://docs.snort.org/rules/headers/directions and https://docs.snort.org/rules/headers/ips 
+       @see: https://docs.suricata.io/en/latest/rules/intro.html
     '''
     # not sure about undefined as the snortparser does not allow it (see https://github.com/g-rd/snortparser/issues/5)
     if (not source or not arrow):
         return None
 
+    # FIXME: add more cases for the source and destination
     if (arrow == '->'):
         if (source.startswith('$EXTERNAL_NET')):
             return INBOUND
@@ -109,7 +120,6 @@ def get_direction(source, arrow, destination):
             elif (not destination.startswith('any') and not source.startswith('$HOME_NET')):
                 return INBOUND
             
-    # FIXME: add more cases for the source and destination
     return None
 
 
@@ -138,34 +148,34 @@ with open(CSVFILE, 'w') as csv_rules:
                 parsed = Parser(rule)      
                 
                 # Create a DataFrame with a single row of the parsed data
+                # TODO: convert proper to string https://stackoverflow.com/questions/22005911/convert-columns-to-string-in-pandas#62978895
                 df = pd.DataFrame([[
-                    get_option(parsed, 'sid')[1],
+                    get_option(parsed, 'sid')[1][0],
                     parsed.header['proto'],
-                    parsed.header['source'][1] if parsed.header['source'] else None,
-                    parsed.header['src_port'][1] if parsed.header['src_port'] else None,
+                    parsed.header['source'][1] if parsed.header['source'] else pd.NA,
+                    parsed.header['src_port'][1] if parsed.header['src_port'] else pd.NA,
                     parsed.header['arrow'],
-                    parsed.header['destination'][1] if parsed.header['destination'] else None,
-                    parsed.header['dst_port'][1] if parsed.header['dst_port'] else None,
+                    parsed.header['destination'][1] if parsed.header['destination'] else pd.NA,
+                    parsed.header['dst_port'][1] if parsed.header['dst_port'] else pd.NA,
                     get_option(parsed, 'classtype')[1][0],
-                    None, # 'inbound' or 'outbound'
-                    None, # 'TActic' -- this is the most important to be added
-                    None, # 'Technique' -- this is the second most important to be added
-                    None, # 'TA_inb' -- inbounds TActic
-                    None, # 'T_inb' -- inbounds Technique (black magic here!)
-                    None, # 'TA_lat' -- lateral TActic
-                    None, # 'T_lat' -- lateral Technique (black magic here!)
-                    None, # 'TA_out' -- outbounds TActic
-                    None, # 'T_out' -- outbounds Technique (black magic here!)
+                    pd.NA, # 'inbound' or 'outbound'
+                    pd.NA, # 'TActic' -- this is the most important to be added
+                    pd.NA, # 'Technique' -- this is the second most important to be added
+                    pd.NA, # 'Tname' -- the Technique name from MITRE ATT&CK Excel file
+                    pd.NA, # 'TA_inb' -- inbounds TActic
+                    pd.NA, # 'T_inb' -- inbounds Technique (black magic here!)
+                    pd.NA, # 'TA_lat' -- lateral TActic
+                    pd.NA, # 'T_lat' -- lateral Technique (black magic here!)
+                    pd.NA, # 'TA_out' -- outbounds TActic
+                    pd.NA, # 'T_out' -- outbounds Technique (black magic here!)
                     get_option(parsed, 'msg')[1][0],
-                    get_option(parsed, 'reference')[1] if get_option(parsed, 'reference') else None
-                ]], columns=COLUMNS)
+                    get_option(parsed, 'reference')[1] if get_option(parsed, 'reference') else pd.NA
+                ]], columns=COLUMNS, dtype=str)
                 
                 # add the inbound/outbound directions
+                # TODO: add some check after the Snort rule header is malformed ['alert', 'ssl'] is fixed
                 direction = get_direction(df['source'][0], df['arrow'][0], df['destination'][0])
                 df['direction'] = direction
-
-                # fix all \xa0 BSs in the DataFrame ... just it doesn't work!!!
-                df.replace(r"\xa0", '', regex=True)
 
                 # switch TActics -- first the specific one, then the generic one
                 classtype = df['classtype'][0]
@@ -178,15 +188,31 @@ with open(CSVFILE, 'w') as csv_rules:
                 else: # if the direction is not defined, then try to get the default TActic from the mappings
                     df['TActic'] = get_TActic(classtype, 'TActic')
 
-                # TODO: add and check the Techniques
+                # finally, add and check the Techniques present as string ['url', 'attack.mitre.org/techniques/T1014']
+                if (pd.notna(df['reference'][0])):
+                    list_from_string = ast.literal_eval(df['reference'][0])
+                    s = pd.Series(list_from_string)
+
+                    # Create a mask for items that start with the specified string
+                    mask = s.str.startswith('attack.mitre.org/techniques/')
+                    # remove the elements that don't match the mask
+                    s = s[mask]
+
+                    # remove the specified string from the start of the strings
+                    if (len(s) > 0):
+                        s[mask] = s[mask].str.replace('attack.mitre.org/techniques/', '', n=1)
+                        # get just the elements that match the mask and its name from the MITRE ATT&CK Excel file
+                        df['Technique'] = s[1]
+                        df['Tname'] = Tes.loc[Tes['ID'] == s[1], "name"].iloc[0]
 
                 # print the Pandas DataFrame to the output file
-                # print(df)
                 csv_rules.write(df.to_csv(index=False, header=False))
-            
+                # print(df)
+
             # NOTE: If the snortparser is unable to parse the rule, it will return a ValueError with the invalid rule item.
             except Exception as e:
                 print("Exception: "+ str(e))
+                print(traceback.format_exc())
                 print(rule)
 
 # Hooraay! We are done
